@@ -1,0 +1,8 @@
+[Unit]
+Description=Uppdatera hallskarmen
+[Service]
+Type=oneshot
+User=roger
+WorkingDirectory=/home/roger
+ExecStart=/usr/bin/python3 /home/roger/hallskarm.py
+TimeoutStartSec=2min

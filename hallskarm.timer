@@ -1,0 +1,7 @@
+[Unit]
+Description=Uppdatera hallskarmen var femte minut
+[Timer]
+OnCalendar=*-*-* *:00/5:00
+AccuracySec=1s
+[Install]
+WantedBy=timers.target
