@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.hallskarm-trafiklab
+.hallskarm-sportadmin
+*.tar.gz
