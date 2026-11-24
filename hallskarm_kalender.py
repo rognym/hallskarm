@@ -1,5 +1,7 @@
 import re
-from datetime import datetime, timezone
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.request import urlopen
 from zoneinfo import ZoneInfo
@@ -42,13 +44,40 @@ def activity_owner(title):
     return None
 
 
-def select_activities(feed, now):
+@dataclass(frozen=True)
+class Activity:
+    name: str
+    title: str
+    place: str
+    meeting: str
+    start: datetime
+    end: datetime | None
+    kind: str
+    sport: str
+
+    @property
+    def hours(self):
+        end = f"{self.end:%H:%M}" if self.end else "—"
+        return f"{self.start:%H:%M}–{end}"
+
+
+def activity_sport(name, title):
+    words = title.casefold()
+    group = title.rsplit(" - ", 1)[-1].strip()
+    if "handboll" in words or group == "F2018 Hjärup":
+        return "handboll"
+    if "gymnastik" in words or group == "G18":
+        return "gymnastik"
+    if "innebandy" in words or name == "Sam" or "IK Stanstad F17/18" in title:
+        return "innebandy"
+    return ""
+
+
+def parse_activities(feed):
     if "BEGIN:VCALENDAR" not in feed:
         raise ValueError("SportAdmin gav inget kalenderflöde")
 
     feed = re.sub(r"\r?\n[ \t]", "", feed)
-    activities = {name: {} for name in GROUPS}
-
     for entry in re.findall(r"BEGIN:VEVENT\r?\n(.*?)END:VEVENT", feed, re.S):
         fields = {}
         for line in entry.splitlines():
@@ -60,6 +89,7 @@ def select_activities(feed, now):
         name = activity_owner(title)
         if not name or fields.get("STATUS") == "CANCELLED":
             continue
+        sport = activity_sport(name, title)
 
         if title.startswith("Träning"):
             kind = "training"
@@ -77,7 +107,7 @@ def select_activities(feed, now):
             kind = "match"
             title = "Sammandrag · " + title.rsplit(" - ", 1)[-1].strip()
         else:
-            continue
+            kind = "other"
 
         start_value = fields.get("DTSTART", "")
         end_value = fields.get("DTEND", "")
@@ -89,41 +119,61 @@ def select_activities(feed, now):
         except ValueError:
             continue
 
-        previous = activities[name].get(kind)
-        if start < now or (previous and previous[0] <= start):
-            continue
-
         description = calendar_text(fields.get("DESCRIPTION", ""))
         meeting = re.search(r"(?im)^Samling:\s*(\d{1,2}:\d{2})", description)
-        meeting_text = meeting[1] if meeting else "—"
-        end_text = f"{end:%H:%M}" if end else "—"
-        date = f"{DAYS[start.weekday()]} {start.day}/{start.month}"
-        location = calendar_text(fields.get("LOCATION", "")).strip() or "Plats saknas"
-
-        activities[name][kind] = (
-            start,
-            f"{date} · {title}",
-            location,
-            f"Samling {meeting_text} · {start:%H:%M}–{end_text}",
+        place = calendar_text(fields.get("LOCATION", "")).strip() or "Plats saknas"
+        yield Activity(
+            name, title, place, meeting[1].zfill(5) if meeting else "—",
+            start, end, kind, sport,
         )
 
+
+def select_activities(feed, now):
+    activities = {name: {} for name in GROUPS}
+    for event in sorted(parse_activities(feed), key=lambda event: event.start):
+        if event.start >= now and event.kind in ("training", "match"):
+            activities[event.name].setdefault(event.kind, event)
+
     return {
-        name: [events[kind][1:] for kind in ("training", "match") if kind in events]
+        name: [
+            (f"{DAYS[event.start.weekday()]} {event.start.day}/{event.start.month} · {event.title}",
+             event.place, f"Samling {event.meeting} · {event.hours}")
+            for kind in ("training", "match") if (event := events.get(kind))
+        ]
         for name, events in activities.items()
     }
 
 
-def next_activities():
+def three_day_activities(feed, today):
+    days = {today + timedelta(days=offset): [] for offset in range(3)}
+    events = defaultdict(set)
+    for event in sorted(parse_activities(feed), key=lambda event: event.start):
+        day = event.start.date()
+        if day in days and event not in events[day]:
+            events[day].add(event)
+            days[day].append(event)
+    return days
+
+
+def get_calendar_feed():
     url = (Path.home() / ".hallskarm-sportadmin").read_text().strip()
     if url.startswith("webcal://"):
         url = "https://" + url.removeprefix("webcal://")
     with urlopen(url, timeout=12) as response:
         feed = response.read().decode("utf-8-sig")
-    return select_activities(feed, datetime.now(STOCKHOLM))
+    return feed
+
+
+def next_activities():
+    return select_activities(get_calendar_feed(), datetime.now(STOCKHOLM))
+
+
+def next_three_days(today):
+    return three_day_activities(get_calendar_feed(), today)
 
 
 if __name__ == "__main__":
-    for name, events in next_activities().items():
-        print(name)
+    for day, events in next_three_days(datetime.now(STOCKHOLM).date()).items():
+        print(day)
         for event in events:
-            print(" | ".join(event))
+            print(f"  {event.name} · {event.title} | {event.place} | {event.meeting} | {event.hours}")

@@ -2,13 +2,15 @@ import argparse
 import json
 import math
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageFont
+
+from hallskarm_kalender import next_three_days, three_day_activities
 
 STOCKHOLM = ZoneInfo("Europe/Stockholm")
 DAYS = ("Måndag", "Tisdag", "Onsdag", "Torsdag", "Fredag", "Lördag", "Söndag")
@@ -18,6 +20,9 @@ WEATHER_URL = (
     "https://opendata-download-metfcst.smhi.se/api/category/snow1g/"
     "version/1/geotype/point/lon/13.14/lat/55.67/data.json"
 )
+TEXT_SMALL = 15
+TEXT_MEDIUM = 21
+TEXT_LARGE = 31
 FONT_DIR = Path("/usr/share/fonts/truetype/dejavu")
 
 
@@ -95,10 +100,44 @@ def draw_weather_icon(draw, x, y, kind):
                       ((34, 43), (44, 43), (37, 51), (45, 51), (29, 65), (33, 54), (27, 54))], fill=0)
 
 
+def draw_sport_icon(draw, x, y, sport):
+    if sport == "handboll":
+        draw.ellipse((x + 2, y + 2, x + 16, y + 16), outline=0, width=2)
+        draw.arc((x + 5, y + 2, x + 13, y + 16), 85, 270, fill=0)
+        draw.line((x + 3, y + 11, x + 15, y + 7), fill=0)
+    elif sport == "innebandy":
+        draw.line((x + 13, y + 1, x + 8, y + 13, x + 2, y + 13), fill=0, width=3)
+        draw.ellipse((x + 12, y + 12, x + 16, y + 16), outline=0)
+    elif sport == "gymnastik":
+        draw.ellipse((x + 7, y, x + 11, y + 4), fill=0)
+        draw.line((x + 2, y + 6, x + 9, y + 9, x + 16, y + 5), fill=0, width=2)
+        draw.line((x + 9, y + 6, x + 9, y + 11), fill=0, width=2)
+        draw.line((x + 3, y + 16, x + 9, y + 11, x + 15, y + 16), fill=0, width=2)
+
+
 @lru_cache
-def font(size, bold):
-    filename = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
-    return ImageFont.truetype(str(FONT_DIR / filename), size)
+def font(size):
+    return ImageFont.truetype(str(FONT_DIR / "DejaVuSans-Bold.ttf"), size)
+
+
+def christmas_countdown(today):
+    days_left = (date(today.year, 12, 24) - today).days
+    if days_left == 0:
+        return "God jul!"
+    if days_left == 1:
+        return "1 dag till julafton"
+    if 2 <= days_left <= 30:
+        return f"{days_left} dagar till julafton"
+    return None
+
+
+def draw_santa_hat(ink, accent, x, y):
+    accent.polygon([(x + 3, y + 22), (x + 9, y + 8), (x + 20, y + 2),
+                    (x + 31, y + 5), (x + 35, y + 13), (x + 26, y + 11),
+                    (x + 27, y + 22)], fill=0)
+    ink.rounded_rectangle((x + 1, y + 21, x + 29, y + 29),
+                          radius=3, outline=0, width=2)
+    ink.ellipse((x + 29, y + 12, x + 39, y + 22), outline=0, width=2)
 
 
 def render(weather, trains, activities, updated, calendar_error=False):
@@ -106,8 +145,8 @@ def render(weather, trains, activities, updated, calendar_error=False):
     red = Image.new("1", black.size, 255)
     ink, accent = ImageDraw.Draw(black), ImageDraw.Draw(red)
 
-    def text(x, y, value, size, *, bold=False, warning=False, width=None, right=False):
-        face = font(size, bold)
+    def text(x, y, value, size, *, warning=False, width=None, right=False):
+        face = font(size)
         if width is not None and face.getlength(value) > width:
             while value and face.getlength(value.rstrip() + "…") > width:
                 value = value[:-1]
@@ -116,32 +155,32 @@ def render(weather, trains, activities, updated, calendar_error=False):
             (x, y), value, font=face, fill=0, anchor="rt" if right else "lt"
         )
 
-    def line(x1, y1, x2, y2):
-        ink.line((x1, y1, x2, y2), fill=0, width=1)
+    date_label = f"{DAYS[updated.weekday()]} {updated.day} {MONTHS[updated.month - 1]}"
+    text(24, 20, date_label, TEXT_LARGE)
+    countdown = christmas_countdown(updated.date())
+    if countdown:
+        countdown_x = 776 - round(font(TEXT_MEDIUM).getlength(countdown))
+        draw_santa_hat(ink, accent, countdown_x - 49, 15)
+        text(776, 21, countdown, TEXT_MEDIUM, right=True)
+    text(776, 52 if countdown else 29, f"Senast uppdaterad {updated:%H:%M}",
+         TEXT_SMALL, right=True)
 
-    date = f"{DAYS[updated.weekday()]} {updated.day} {MONTHS[updated.month - 1]}"
-    text(24, 20, date, 31, bold=True)
-    text(776, 29, f"Senast uppdaterad {updated:%H:%M}", 17, right=True)
-    line(24, 66, 776, 66)
-    line(300, 87, 300, 425)
-
-    text(24, 85, "Hjärup → Malmö C", 24, bold=True)
-    text(24, 121, "Kommande avgångar", 16)
+    text(24, 85, "Hjärup → Malmö C", TEXT_MEDIUM)
+    text(24, 121, "Kommande avgångar", TEXT_SMALL)
     for index, (label, delayed) in enumerate(trains[:2]):
-        size = 38 if len(label) <= 5 else 29 if delayed else 18
-        text(24, 151 + index * 49, label, size, bold=True, warning=delayed, width=252)
+        size = TEXT_LARGE if len(label) <= 5 else TEXT_MEDIUM
+        text(24, 151 + index * 49, label, size, warning=delayed, width=252)
 
-    line(24, 246, 276, 246)
-    text(24, 262, "Väder i Hjärup", 22, bold=True)
+    text(24, 262, "Väder i Hjärup", TEXT_MEDIUM)
     if weather is None:
-        text(24, 301, "Prognos saknas", 19)
+        text(24, 301, "Prognos saknas", TEXT_MEDIUM)
     else:
         temperature = number(weather, "air_temperature", -70, 70)
         temperature_label = "—" if temperature is None else f"{round(temperature):+d}".replace("+0", "0")
-        text(24, 295, f"{temperature_label} °C", 45, bold=True)
+        text(24, 299, f"{temperature_label} °C", TEXT_LARGE)
         label, kind = weather_kind(weather.get("symbol_code"))
         draw_weather_icon(ink, 199, 289, kind)
-        text(24, 350, label, 18, bold=True, width=252)
+        text(24, 350, label, TEXT_MEDIUM, width=252)
 
         speed = number(weather, "wind_speed", 0, 100)
         direction = number(weather, "wind_from_direction", 0, 360)
@@ -154,26 +193,49 @@ def render(weather, trains, activities, updated, calendar_error=False):
             wind = f"Vind {bearing + ' ' if bearing else ''}{speed:.0f} m/s"
             if gust is not None:
                 wind += f" · byar {gust:.0f}"
-            text(24, 376, wind, 16, width=252)
+            text(24, 376, wind, TEXT_SMALL, width=252)
         if risk is not None:
-            text(24, 401, f"Nederbördsrisk {risk:.0f} %", 16)
+            text(24, 401, f"Nederbördsrisk {risk:.0f} %", TEXT_SMALL)
 
-    for name, top in (("Sam", 84), ("Li", 257)):
-        text(324, top, name, 27, bold=True)
-        events = activities.get(name, [])
-        if not events:
-            message = "Kalendern kunde inte hämtas" if calendar_error else "Inga kommande aktiviteter"
-            text(324, top + 39, message, 17)
+    if calendar_error:
+        text(324, 122, "Kalendern kunde inte hämtas", TEXT_SMALL)
+    else:
+        row = 88
+        total = sum(map(len, activities.values()))
+        # Reserve room for all three headings and a notice on unusually busy days.
+        max_events = 6
+        row_height = 44 if total <= 4 else 36
+        shown = 0
+        for day, events in activities.items():
+            heading = f"{DAYS[day.weekday()]} {day.day} {MONTHS[day.month - 1]}"
+            text(324, row, heading, TEXT_MEDIUM)
+            row += 26
 
-        for index, (title, place, times) in enumerate(events[:2]):
-            row = top + 35 + index * 65
-            text(324, row, title, 18, bold=True, width=452)
-            text(324, row + 22, place, 17, width=452)
-            text(324, row + 43, times, 17, width=452)
+            if not events and total <= 4:
+                text(324, row, "Inga aktiviteter", TEXT_SMALL)
+                row += 21
 
-    line(324, 249, 776, 249)
-    line(24, 439, 776, 439)
-    text(24, 452, "Tågdata från Trafiklab.se  ·  Väderprognos från SMHI  ·  Kalender från SportAdmin", 14)
+            for event in events[:max_events - shown]:
+                draw_sport_icon(ink, 324, row + 2, event.sport)
+                sport = event.sport.capitalize()
+                if event.kind == "training" and sport:
+                    label = f"{event.name} · {sport}"
+                else:
+                    label = f"{event.name} · {event.title}"
+                text(350, row, label, TEXT_MEDIUM, width=220)
+                if event.meeting != "—":
+                    text(625, row + 4, f"({event.meeting})", TEXT_SMALL, right=True)
+                text(776, row, event.hours, TEXT_MEDIUM, right=True)
+                text(350, row + 23, event.place, TEXT_SMALL, width=280)
+                row += row_height
+                shown += 1
+
+            row += 5
+
+        if shown < total:
+            text(324, row, f"+ {total - shown} till i SportAdmin", TEXT_SMALL, width=752)
+
+    text(24, 452, "Tågdata från Trafiklab.se  ·  Väderprognos från SMHI  ·  Kalender från SportAdmin", TEXT_SMALL, width=752)
     return black, red
 
 
@@ -187,24 +249,28 @@ def main():
                    "wind_from_direction": 225, "wind_speed_of_gust": 9,
                    "probability_of_precipitation": 70}
         trains = [("13:54", False), ("14:09 → 14:14", True)]
-        activities = {
-            "Sam": [
-                ("Mån 23/11 · Träning · PX-lag", "Idrottshallen Hjärup", "Samling 19:15 · 19:30–21:00"),
-                ("Ons 25/11 · Träning · P12/13", "Bråhögshallen", "Samling 18:45 · 19:15–20:30"),
-            ],
-            "Li": [
-                ("Mån 23/11 · Träning · F17/18", "Bråhögshallen", "Samling 17:45 · 17:45–19:00"),
-                ("Tis 24/11 · Träning · F2018 Hjärup", "Hjärupslundshallen", "Samling 17:30 · 17:30–18:45"),
-            ],
-        }
-        date = datetime(2026, 11, 23, 13, 48, tzinfo=STOCKHOLM)
+        date = datetime(2026, 11, 24, 11, 0, tzinfo=STOCKHOLM)
+        examples = [
+            ("20261124", "1730", "1845", "1730", "F2018 Hjärup", "Hjärupslundshallen"),
+            ("20261125", "1915", "2030", "1845", "P12/13", "Bråhögshallen"),
+            ("20261126", "1800", "1930", "1800", "G18", "Uppåkrahallen"),
+            ("20261126", "1915", "2030", "1900", "P13", "Idrottshallen Hjärup"),
+        ]
+        entries = ["BEGIN:VCALENDAR"]
+        for day, start, end, meeting, group, place in examples:
+            entries.extend((
+                "BEGIN:VEVENT", f"DTSTART:{day}T{start}00", f"DTEND:{day}T{end}00",
+                f"SUMMARY:Träning - {group}", f"LOCATION:{place}",
+                f"DESCRIPTION:Samling: {meeting[:2]}:{meeting[2:]}", "END:VEVENT",
+            ))
+        entries.append("END:VCALENDAR")
+        activities = three_day_activities("\n".join(entries), date.date())
         black, red = render(weather, trains, activities, date)
         image = black.convert("RGB")
         image.paste((177, 27, 27), (0, 0, *image.size), red.point(lambda pixel: 255 - pixel))
         image.save(args.preview)
         return
 
-    from hallskarm_kalender import next_activities
     from hallskarm_tag import next_trains
 
     try:
@@ -214,15 +280,16 @@ def main():
         weather = None
 
     trains = next_trains()
+    updated = datetime.now(STOCKHOLM)
     calendar_error = False
     try:
-        activities = next_activities()
+        activities = next_three_days(updated.date())
     except (OSError, ValueError) as error:
         print(f"SportAdmin: {type(error).__name__}", flush=True)
         activities = {}
         calendar_error = True
 
-    black, red = render(weather, trains, activities, datetime.now(STOCKHOLM), calendar_error)
+    black, red = render(weather, trains, activities, updated, calendar_error)
 
     driver_dir = Path.home() / "e-Paper/RaspberryPi_JetsonNano/python/lib"
     sys.path.insert(0, str(driver_dir))
